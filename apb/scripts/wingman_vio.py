@@ -254,9 +254,107 @@ class ImuReceiver(threading.Thread):
 
 # ── VIO main loop ─────────────────────────────────────────────────────────────
 
+class MjpegHttpReader:
+    """
+    Minimal MJPEG-over-HTTP client. Drop-in replacement for cv2.VideoCapture
+    when the source is a `multipart/x-mixed-replace; boundary=…` stream.
+
+    Matches the cv2.VideoCapture API surface that wingman_vio.py uses:
+      - isOpened() -> bool
+      - read() -> (ret: bool, frame: ndarray)
+      - set(prop, value) -> bool   (no-op; HTTP source is fixed-format)
+      - release() -> None
+    """
+    def __init__(self, url: str):
+        import urllib.request
+        self._url = url
+        self._closed = False
+        self._stream = None
+        self._buf = b""
+        self._boundary = None
+        try:
+            req = urllib.request.Request(url)
+            self._stream = urllib.request.urlopen(req, timeout=5)
+            ctype = self._stream.headers.get("Content-Type", "")
+            if "boundary=" in ctype:
+                self._boundary = b"--" + ctype.split("boundary=", 1)[1].strip().encode()
+            else:
+                self._boundary = b"--frame"
+        except Exception as e:
+            print(f"[MjpegHttpReader] open failed: {e}", flush=True)
+            self._stream = None
+
+    def isOpened(self) -> bool:
+        return self._stream is not None and not self._closed
+
+    def set(self, prop, value) -> bool:
+        return False  # source format is fixed by the producer
+
+    def read(self):
+        import numpy as _np
+        if not self.isOpened():
+            return False, None
+        try:
+            # Find next boundary, then Content-Length header, then exactly that
+            # many bytes for the JPEG payload.
+            while self._boundary not in self._buf:
+                chunk = self._stream.read(8192)
+                if not chunk:
+                    return False, None
+                self._buf += chunk
+            i = self._buf.find(self._boundary)
+            self._buf = self._buf[i + len(self._boundary):]
+            # Read headers up to the blank line.
+            while b"\r\n\r\n" not in self._buf:
+                chunk = self._stream.read(2048)
+                if not chunk:
+                    return False, None
+                self._buf += chunk
+            hdr_end = self._buf.find(b"\r\n\r\n")
+            headers = self._buf[:hdr_end].decode(errors="ignore")
+            self._buf = self._buf[hdr_end + 4:]
+            length = None
+            for line in headers.split("\r\n"):
+                if line.lower().startswith("content-length:"):
+                    length = int(line.split(":", 1)[1].strip())
+                    break
+            if length is None:
+                return False, None
+            while len(self._buf) < length:
+                chunk = self._stream.read(min(65536, length - len(self._buf)))
+                if not chunk:
+                    return False, None
+                self._buf += chunk
+            jpeg = self._buf[:length]
+            self._buf = self._buf[length:]
+            arr = _np.frombuffer(jpeg, dtype=_np.uint8)
+            frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            if frame is None:
+                return False, None
+            return True, frame
+        except Exception as e:
+            print(f"[MjpegHttpReader] read error: {e}", flush=True)
+            return False, None
+
+    def release(self):
+        self._closed = True
+        if self._stream is not None:
+            try: self._stream.close()
+            except Exception: pass
+
+
 class WingmanVio:
     def __init__(self, camera_dev, imu_port, out_port, out_host):
-        self.cap         = cv2.VideoCapture(camera_dev)
+        # Yocto Scarthgap's cv2 is GStreamer-only (no FFmpeg backend) and the
+        # souphttpsrc/multipartdemux path raced with detector-side encoder
+        # readiness, throwing "Internal data stream error" depending on the
+        # caller's import graph. Use a small in-process MJPEG reader for HTTP
+        # sources — same multipart-boundary parse cv2 would do, deterministic,
+        # no GStreamer pipeline magic.
+        if camera_dev.startswith(("http://", "https://")):
+            self.cap = MjpegHttpReader(camera_dev)
+        else:
+            self.cap = cv2.VideoCapture(camera_dev)
         self.imu         = ImuReceiver(imu_port)
         self.out_sock    = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.out_addr    = (out_host, out_port)
