@@ -265,12 +265,14 @@ class MjpegHttpReader:
       - set(prop, value) -> bool   (no-op; HTTP source is fixed-format)
       - release() -> None
     """
+    _MAX_BUF = 524288  # 512 KB — flush and reconnect if exceeded
+
     def __init__(self, url: str):
         import urllib.request
         self._url = url
         self._closed = False
         self._stream = None
-        self._buf = b""
+        self._buf = bytearray()
         self._boundary = None
         try:
             req = urllib.request.Request(url)
@@ -302,8 +304,12 @@ class MjpegHttpReader:
                 if not chunk:
                     return False, None
                 self._buf += chunk
+                if len(self._buf) > self._MAX_BUF:
+                    print("[MjpegHttpReader] buf overflow — flushing", flush=True)
+                    self._buf = bytearray()
+                    return False, None
             i = self._buf.find(self._boundary)
-            self._buf = self._buf[i + len(self._boundary):]
+            del self._buf[:i + len(self._boundary)]
             # Read headers up to the blank line.
             while b"\r\n\r\n" not in self._buf:
                 chunk = self._stream.read(2048)
@@ -312,7 +318,7 @@ class MjpegHttpReader:
                 self._buf += chunk
             hdr_end = self._buf.find(b"\r\n\r\n")
             headers = self._buf[:hdr_end].decode(errors="ignore")
-            self._buf = self._buf[hdr_end + 4:]
+            del self._buf[:hdr_end + 4]
             length = None
             for line in headers.split("\r\n"):
                 if line.lower().startswith("content-length:"):
@@ -325,8 +331,8 @@ class MjpegHttpReader:
                 if not chunk:
                     return False, None
                 self._buf += chunk
-            jpeg = self._buf[:length]
-            self._buf = self._buf[length:]
+            jpeg = bytes(self._buf[:length])
+            del self._buf[:length]
             arr = _np.frombuffer(jpeg, dtype=_np.uint8)
             frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
             if frame is None:
