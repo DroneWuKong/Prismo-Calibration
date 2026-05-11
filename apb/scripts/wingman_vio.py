@@ -76,10 +76,12 @@ DEFAULT_CAMERA_PROFILE = "generic_wide"
 COMP_ALPHA       = 0.98           # complementary filter: gyro weight (high freq)
 G_MPS2           = 9.80665
 
-# ── MAVLink HIGHRES_IMU (msg 105) minimal parser ──────────────────────────────
+# ── MAVLink IMU parsers ───────────────────────────────────────────────────────
 
 MAVLINK_STX_V2   = 0xFD
 MSG_HIGHRES_IMU  = 105
+MSG_RAW_IMU      = 27
+MSG_SCALED_IMU   = 26
 MSG_HEARTBEAT    = 0
 
 def _parse_mavlink_v2(buf: bytes):
@@ -121,6 +123,27 @@ def parse_highres_imu(payload: bytes):
         "ts": ts,
         "gyro": (xgyro, ygyro, zgyro),   # rad/s, filtered
         "accel": (xacc, yacc, zacc),      # m/s²
+    }
+
+def parse_raw_imu(payload: bytes):
+    """
+    RAW_IMU / SCALED_IMU payload layout:
+      uint64 time_usec
+      int16  xacc, yacc, zacc     millig
+      int16  xgyro, ygyro, zgyro  millirad/s
+      int16  xmag, ymag, zmag
+    """
+    if len(payload) < 26:
+        return None
+    ts, xacc, yacc, zacc, xgyro, ygyro, zgyro = struct.unpack_from('<Qhhhhhh', payload, 0)
+    return {
+        "ts": ts,
+        "gyro": (xgyro / 1000.0, ygyro / 1000.0, zgyro / 1000.0),
+        "accel": (
+            xacc * G_MPS2 / 1000.0,
+            yacc * G_MPS2 / 1000.0,
+            zacc * G_MPS2 / 1000.0,
+        ),
     }
 
 # ── Quaternion math ───────────────────────────────────────────────────────────
@@ -234,10 +257,14 @@ class ImuReceiver(threading.Thread):
                 for msgid, payload in _parse_mavlink_v2(data):
                     if msgid == MSG_HIGHRES_IMU:
                         imu = parse_highres_imu(payload)
-                        if imu:
-                            with self.lock:
-                                self.buf.append(imu)
-                                self.latest = imu
+                    elif msgid in (MSG_RAW_IMU, MSG_SCALED_IMU):
+                        imu = parse_raw_imu(payload)
+                    else:
+                        imu = None
+                    if imu:
+                        with self.lock:
+                            self.buf.append(imu)
+                            self.latest = imu
             except socket.timeout:
                 pass
             except Exception as e:
@@ -560,6 +587,10 @@ class WingmanVio:
         }
 
     def publish(self, est: dict):
+        # Publish in the companion's monotonic time base. ArduPilot RAW_IMU
+        # timestamps are useful internally for pre-integration, but APB's
+        # JVM stale gate compares against System.nanoTime().
+        est["ts"] = int(time.monotonic() * 1e6)
         msg = (json.dumps(est) + "\n").encode()
         try:
             self.out_sock.sendto(msg, self.out_addr)
