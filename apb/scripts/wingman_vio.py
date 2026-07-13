@@ -53,7 +53,7 @@ DEFAULT_OUT_PORT = 14560          # wingman-apb ExternalVioReceiver
 DEFAULT_OUT_HOST = "127.0.0.1"
 
 CAMERA_WIDTH     = 320            # QVGA — fast enough for FAST+LK on Cortex-A53
-CAMERA_HEIGHT    = 240
+CAMERA_HEIGHT    = 180
 CAMERA_FPS       = 20
 
 MAX_FEATURES     = 50             # FAST corners to track
@@ -301,6 +301,8 @@ class MjpegHttpReader:
         self._stream = None
         self._buf = bytearray()
         self._boundary = None
+        self._decode_period_s = 1.0 / CAMERA_FPS
+        self._next_decode_at = 0.0
         try:
             req = urllib.request.Request(url)
             self._stream = urllib.request.urlopen(req, timeout=5)
@@ -324,47 +326,57 @@ class MjpegHttpReader:
         if not self.isOpened():
             return False, None
         try:
-            # Find next boundary, then Content-Length header, then exactly that
-            # many bytes for the JPEG payload.
-            while self._boundary not in self._buf:
-                chunk = self._stream.read(8192)
-                if not chunk:
+            while self.isOpened():
+                # Find next boundary, then Content-Length header, then exactly
+                # that many bytes for the JPEG payload.
+                while self._boundary not in self._buf:
+                    chunk = self._stream.read(8192)
+                    if not chunk:
+                        return False, None
+                    self._buf += chunk
+                    if len(self._buf) > self._MAX_BUF:
+                        print("[MjpegHttpReader] buf overflow — flushing", flush=True)
+                        self._buf = bytearray()
+                        return False, None
+                i = self._buf.find(self._boundary)
+                del self._buf[:i + len(self._boundary)]
+                while b"\r\n\r\n" not in self._buf:
+                    chunk = self._stream.read(2048)
+                    if not chunk:
+                        return False, None
+                    self._buf += chunk
+                hdr_end = self._buf.find(b"\r\n\r\n")
+                headers = self._buf[:hdr_end].decode(errors="ignore")
+                del self._buf[:hdr_end + 4]
+                length = None
+                for line in headers.split("\r\n"):
+                    if line.lower().startswith("content-length:"):
+                        length = int(line.split(":", 1)[1].strip())
+                        break
+                if length is None:
+                    continue
+                while len(self._buf) < length:
+                    chunk = self._stream.read(min(65536, length - len(self._buf)))
+                    if not chunk:
+                        return False, None
+                    self._buf += chunk
+                jpeg = bytes(self._buf[:length])
+                del self._buf[:length]
+
+                # Drain the producer at its live edge, but only pay the JPEG
+                # decode cost at the VIO rate. Sleeping here would build a TCP
+                # backlog and make odometry operate on old frames.
+                now = time.monotonic()
+                if now < self._next_decode_at:
+                    continue
+                self._next_decode_at = now + self._decode_period_s
+
+                arr = _np.frombuffer(jpeg, dtype=_np.uint8)
+                frame = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
+                if frame is None:
                     return False, None
-                self._buf += chunk
-                if len(self._buf) > self._MAX_BUF:
-                    print("[MjpegHttpReader] buf overflow — flushing", flush=True)
-                    self._buf = bytearray()
-                    return False, None
-            i = self._buf.find(self._boundary)
-            del self._buf[:i + len(self._boundary)]
-            # Read headers up to the blank line.
-            while b"\r\n\r\n" not in self._buf:
-                chunk = self._stream.read(2048)
-                if not chunk:
-                    return False, None
-                self._buf += chunk
-            hdr_end = self._buf.find(b"\r\n\r\n")
-            headers = self._buf[:hdr_end].decode(errors="ignore")
-            del self._buf[:hdr_end + 4]
-            length = None
-            for line in headers.split("\r\n"):
-                if line.lower().startswith("content-length:"):
-                    length = int(line.split(":", 1)[1].strip())
-                    break
-            if length is None:
-                return False, None
-            while len(self._buf) < length:
-                chunk = self._stream.read(min(65536, length - len(self._buf)))
-                if not chunk:
-                    return False, None
-                self._buf += chunk
-            jpeg = bytes(self._buf[:length])
-            del self._buf[:length]
-            arr = _np.frombuffer(jpeg, dtype=_np.uint8)
-            frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-            if frame is None:
-                return False, None
-            return True, frame
+                return True, frame
+            return False, None
         except Exception as e:
             print(f"[MjpegHttpReader] read error: {e}", flush=True)
             return False, None
@@ -637,6 +649,16 @@ class WingmanVio:
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             else:
                 gray = frame
+
+            # HTTP MJPEG sources cannot honor CAP_PROP_FRAME_WIDTH. Downscale
+            # explicitly before FAST/LK so optical flow operates on 320x180,
+            # not the former 960x540 commander stream.
+            if gray.shape[1] != CAMERA_WIDTH or gray.shape[0] != CAMERA_HEIGHT:
+                gray = cv2.resize(
+                    gray,
+                    (CAMERA_WIDTH, CAMERA_HEIGHT),
+                    interpolation=cv2.INTER_AREA,
+                )
 
             # Get approximate frame timestamp from monotonic clock
             ts_us = int(time.monotonic() * 1e6)
