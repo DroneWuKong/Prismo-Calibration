@@ -33,6 +33,7 @@ Dependencies (Yocto Kirkstone apt / pip):
 """
 
 import argparse
+from fusion_control import FusionControl, native_vio_running
 import json
 import math
 import socket
@@ -244,10 +245,10 @@ class ImuReceiver(threading.Thread):
         self.lock   = threading.Lock()
         self.buf    = deque(maxlen=maxlen)
         self.latest = None
+        self._clock_offset_us = None
 
     def run(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
         sock.bind(("0.0.0.0", self.port))
         sock.settimeout(0.5)
         print(f"[ImuReceiver] listening on UDP:{self.port}")
@@ -262,6 +263,13 @@ class ImuReceiver(threading.Thread):
                     else:
                         imu = None
                     if imu:
+                        receipt = int(time.monotonic()*1e6)
+                        offset = receipt-imu["ts"]
+                        if self._clock_offset_us is None or abs(offset-self._clock_offset_us)>1_000_000:
+                            self._clock_offset_us = offset
+                        else:
+                            self._clock_offset_us = min(self._clock_offset_us,offset)
+                        imu["ts"] += self._clock_offset_us
                         with self.lock:
                             self.buf.append(imu)
                             self.latest = imu
@@ -303,9 +311,10 @@ class MjpegHttpReader:
         self._boundary = None
         self._decode_period_s = 1.0 / CAMERA_FPS
         self._next_decode_at = 0.0
+        self.timestamp_us = 0
         try:
             req = urllib.request.Request(url)
-            self._stream = urllib.request.urlopen(req, timeout=5)
+            self._stream = urllib.request.urlopen(req, timeout=1)
             ctype = self._stream.headers.get("Content-Type", "")
             if "boundary=" in ctype:
                 self._boundary = b"--" + ctype.split("boundary=", 1)[1].strip().encode()
@@ -349,12 +358,16 @@ class MjpegHttpReader:
                 headers = self._buf[:hdr_end].decode(errors="ignore")
                 del self._buf[:hdr_end + 4]
                 length = None
+                capture_timestamp_us = 0
                 for line in headers.split("\r\n"):
                     if line.lower().startswith("content-length:"):
                         length = int(line.split(":", 1)[1].strip())
-                        break
+                    if line.lower().startswith("x-capture-monotonic-us:"):
+                        capture_timestamp_us = int(line.split(":", 1)[1].strip())
                 if length is None:
                     continue
+                if length <= 0 or length > self._MAX_BUF:
+                    raise ValueError("invalid JPEG length")
                 while len(self._buf) < length:
                     chunk = self._stream.read(min(65536, length - len(self._buf)))
                     if not chunk:
@@ -375,6 +388,7 @@ class MjpegHttpReader:
                 frame = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
                 if frame is None:
                     return False, None
+                self.timestamp_us = capture_timestamp_us
                 return True, frame
             return False, None
         except Exception as e:
@@ -390,6 +404,7 @@ class MjpegHttpReader:
 
 class WingmanVio:
     def __init__(self, camera_dev, imu_port, out_port, out_host):
+        self.camera_dev = camera_dev
         # Yocto Scarthgap's cv2 is GStreamer-only (no FFmpeg backend) and the
         # souphttpsrc/multipartdemux path raced with detector-side encoder
         # readiness, throwing "Internal data stream error" depending on the
@@ -635,9 +650,20 @@ class WingmanVio:
                          daemon=True, name="vio-baro").start()
         print(f"[WingmanVio] baro alt polling → {apb_url}")
         self.imu.start()
+        control = FusionControl()
+        camera_dev = self.camera_dev
         print(f"[WingmanVio] running — publishing to {self.out_addr}")
 
         while True:
+            if not control.enabled("vio") or native_vio_running():
+                self.cap.release()
+                self.prev_gray = None
+                self.prev_pts = None
+                self.prev_ts_us = 0
+                time.sleep(0.5)
+                continue
+            if not self.cap.isOpened() and camera_dev:
+                self.cap = MjpegHttpReader(camera_dev) if camera_dev.startswith(('http://', 'https://')) else cv2.VideoCapture(camera_dev)
             ret, frame = self.cap.read()
             if not ret:
                 print("[WingmanVio] camera read failed — retrying")
@@ -663,10 +689,10 @@ class WingmanVio:
             # Get approximate frame timestamp from monotonic clock
             ts_us = int(time.monotonic() * 1e6)
 
-            # Use PX4 IMU timestamp if available (better sync)
-            imu = self.imu.get_latest()
-            if imu:
-                ts_us = imu["ts"]
+            # Never replace APB camera time with the FC boot clock.
+            capture_ts = getattr(self.cap, "timestamp_us", 0)
+            if capture_ts:
+                ts_us = capture_ts
 
             est = self.step(gray, ts_us)
             if est:
