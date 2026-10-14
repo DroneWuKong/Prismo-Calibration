@@ -117,8 +117,7 @@ def parse_highres_imu(payload: bytes):
       uint16 fields_updated
       uint8  id
     """
-    if len(payload) < 62:
-        return None
+    payload = payload.ljust(63, b"\0")
     ts, xacc, yacc, zacc, xgyro, ygyro, zgyro = struct.unpack_from('<Qffffff', payload, 0)
     return {
         "ts": ts,
@@ -128,24 +127,27 @@ def parse_highres_imu(payload: bytes):
 
 def parse_raw_imu(payload: bytes):
     """
-    RAW_IMU / SCALED_IMU payload layout:
+    RAW_IMU payload layout (SCALED_IMU has a different 32-bit millisecond clock):
       uint64 time_usec
       int16  xacc, yacc, zacc     millig
       int16  xgyro, ygyro, zgyro  millirad/s
       int16  xmag, ymag, zmag
     """
-    if len(payload) < 26:
-        return None
+    payload = payload.ljust(26, b"\0")  # MAVLink 2 omits trailing zero bytes.
     ts, xacc, yacc, zacc, xgyro, ygyro, zgyro = struct.unpack_from('<Qhhhhhh', payload, 0)
-    return {
-        "ts": ts,
-        "gyro": (xgyro / 1000.0, ygyro / 1000.0, zgyro / 1000.0),
-        "accel": (
-            xacc * G_MPS2 / 1000.0,
-            yacc * G_MPS2 / 1000.0,
-            zacc * G_MPS2 / 1000.0,
-        ),
-    }
+    return _scaled_imu_sample(ts, xacc, yacc, zacc, xgyro, ygyro, zgyro)
+
+
+def parse_scaled_imu(payload: bytes):
+    payload = payload.ljust(22, b"\0")
+    ts_ms, xacc, yacc, zacc, xgyro, ygyro, zgyro = struct.unpack_from('<Ihhhhhh', payload, 0)
+    return _scaled_imu_sample(ts_ms * 1000, xacc, yacc, zacc, xgyro, ygyro, zgyro)
+
+
+def _scaled_imu_sample(ts, xacc, yacc, zacc, xgyro, ygyro, zgyro):
+    return {"ts": ts,
+            "gyro": (xgyro / 1000.0, ygyro / 1000.0, zgyro / 1000.0),
+            "accel": tuple(v * G_MPS2 / 1000.0 for v in (xacc, yacc, zacc))}
 
 # ── Quaternion math ───────────────────────────────────────────────────────────
 
@@ -246,6 +248,7 @@ class ImuReceiver(threading.Thread):
         self.buf    = deque(maxlen=maxlen)
         self.latest = None
         self._clock_offset_us = None
+        self._selected_msgid = None
 
     def run(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -258,11 +261,20 @@ class ImuReceiver(threading.Thread):
                 for msgid, payload in _parse_mavlink_v2(data):
                     if msgid == MSG_HIGHRES_IMU:
                         imu = parse_highres_imu(payload)
-                    elif msgid in (MSG_RAW_IMU, MSG_SCALED_IMU):
+                    elif msgid == MSG_RAW_IMU:
                         imu = parse_raw_imu(payload)
+                    elif msgid == MSG_SCALED_IMU:
+                        imu = parse_scaled_imu(payload)
                     else:
                         imu = None
                     if imu:
+                        # Never mix redundant IMU streams or their different clocks.
+                        if not all(math.isfinite(v) for v in (*imu["accel"], *imu["gyro"])):
+                            continue
+                        if self._selected_msgid is None:
+                            self._selected_msgid = msgid
+                        if msgid != self._selected_msgid:
+                            continue
                         receipt = int(time.monotonic()*1e6)
                         offset = receipt-imu["ts"]
                         if self._clock_offset_us is None or abs(offset-self._clock_offset_us)>1_000_000:
@@ -462,6 +474,7 @@ class WingmanVio:
         dq = np.array([1., 0., 0., 0.])
         dv = np.zeros(3)
         prev_ts = from_us
+        integrated = 0
         gyro_sum = np.zeros(3)
 
         for s in sorted(samples, key=lambda x: x["ts"]):
@@ -472,6 +485,7 @@ class WingmanVio:
 
             gx, gy, gz = s["gyro"]
             gyro_sum += np.array([gx, gy, gz])
+            integrated += 1
 
             # Integrate rotation
             omega = np.array([gx, gy, gz])
@@ -489,12 +503,14 @@ class WingmanVio:
                           -self.orientation[2], -self.orientation[3]]),
                 np.array([0., 0., G_MPS2])
             )
-            a_body = np.array([ax - g_body[0], ay - g_body[1], az - g_body[2]])
+            # An accelerometer measures specific force: stationary upright is
+            # (0, 0, -g) in FRD. Thus a_NED = R_body_to_NED @ f_body + g_NED.
+            a_body = np.array([ax + g_body[0], ay + g_body[1], az + g_body[2]])
             a_ned  = quat_rotate(self.orientation, a_body)
             dv    += a_ned * dt
             prev_ts = s["ts"]
 
-        n = len(samples)
+        n = integrated
         avg_gyro = gyro_sum / n if n > 0 else np.zeros(3)
         return dq, dv, avg_gyro
 
@@ -502,6 +518,15 @@ class WingmanVio:
         """Process one camera frame. Returns OdometryEstimate dict or None."""
         now_us = ts_us if ts_us > 0 else int(time.monotonic() * 1e6)
         dt_s   = (now_us - self.prev_ts_us) / 1e6 if self.prev_ts_us > 0 else 1/CAMERA_FPS
+
+        # Do not integrate a camera restart, repeated timestamp or clock jump.
+        # A new frame pair is required after a gap; preserve the diagnostic origin.
+        if self.prev_ts_us and not 0 < dt_s <= 0.25:
+            self.prev_gray = gray.copy()
+            self.prev_pts = None
+            self.prev_ts_us = now_us
+            self.vel[:] = 0
+            return None
 
         # ── IMU pre-integration ────────────────────────────────────────────────
         dq_imu, dv_imu, avg_gyro = self._imu_pre_integrate(self.prev_ts_us, now_us)
@@ -579,9 +604,11 @@ class WingmanVio:
         self.pos += self.vel * dt_s
 
         # ── Confidence ────────────────────────────────────────────────────────
-        conf = min(1.0, n_tracked / MAX_FEATURES)
-        if self.imu.get_latest() is None:
-            conf *= 0.5   # no IMU = lower confidence even if camera is fine
+        tracking_confidence = min(1.0, n_tracked / MAX_FEATURES)
+        # This legacy planar tracker has guessed intrinsics/height, no calibrated
+        # camera-to-IMU transform and no observed yaw. Corners cannot certify a
+        # metric pose. Keep diagnostic tracking separate from navigation quality.
+        conf = 0.0
 
         # ── Store state ───────────────────────────────────────────────────────
         self.prev_gray    = gray.copy()
@@ -610,14 +637,20 @@ class WingmanVio:
             "conf": round(conf,                4),
             "tier": 1,
             "nf":   n_tracked,
-            "src":  "LK_OPTICAL_FLOW"
+            "src":  "LK_OPTICAL_FLOW",
+            "tracking_confidence": round(tracking_confidence, 4),
+            "metric_validated": False,
+            "diagnostic_only": True,
+            "reason": "legacy planar flow lacks calibrated metric pose and yaw"
         }
 
     def publish(self, est: dict):
         # Publish in the companion's monotonic time base. ArduPilot RAW_IMU
         # timestamps are useful internally for pre-integration, but APB's
         # JVM stale gate compares against System.nanoTime().
-        est["ts"] = int(time.monotonic() * 1e6)
+        age_us = int(time.monotonic() * 1e6) - est["ts"]
+        if not 0 <= age_us <= 250_000:
+            return  # Do not re-stamp an old frame as a fresh observation.
         msg = (json.dumps(est) + "\n").encode()
         try:
             self.out_sock.sendto(msg, self.out_addr)
@@ -636,9 +669,7 @@ class WingmanVio:
                     if agl and float(agl) > 0.3:
                         with self._baro_lock: self.baro_alt_m = max(0.3, float(agl))
                         time.sleep(0.5); continue
-                    pos_d = d.get("odometry",{}).get("posD")
-                    if pos_d and abs(float(pos_d)) > 0.3:
-                        with self._baro_lock: self.baro_alt_m = abs(float(pos_d))
+                    # Never feed our own output back into optical-flow scale.
             except Exception: pass
             time.sleep(0.5)
     def run(self, apb_url: str = DEFAULT_APB_URL):
