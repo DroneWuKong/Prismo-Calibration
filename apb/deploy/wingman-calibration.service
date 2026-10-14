@@ -1,0 +1,16 @@
+[Unit]
+Description=Prismo guided camera calibration
+After=network.target wingman-apb.service wingman-detector.service mavlink-router.service
+ConditionPathExists=/data/wingman/calibration_app.py
+[Service]
+Type=simple
+WorkingDirectory=/data/wingman
+ExecStart=/usr/bin/python3 /data/wingman/calibration_app.py --bind 0.0.0.0
+Environment=PYTHONPATH=/data/wingman/pylib
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=5
+Nice=10
+MemoryMax=200M
+[Install]
+WantedBy=multi-user.target
