@@ -89,8 +89,9 @@ def solve(images, size, square_mm, model="auto"):
 class Session:
     def __init__(self, output, camera):
         self.output=Path(output);self.camera=camera;self.lock=threading.RLock()
-        self.running=False;self.preview=None;self.result=None;self.images=[];self.coverage=set()
+        self.running=False;self.preview=None;self.result=None;self.alignment=None;self.motion_phase=None;self.motion_seconds=0;self.motion_duration=0;self.images=[];self.coverage=set()
         self.message="Set the screen size, then start";self.state="idle";self.path=None
+        self.device_id=hashlib.sha256(Path('/etc/machine-id').read_bytes()).hexdigest()[:16] if Path('/etc/machine-id').exists() else 'unknown-device'
         self.token=secrets.token_urlsafe(32);self.last_attempt=0
         self.worker=None;self.stop_event=threading.Event();self.last_client=time.monotonic()
     def status(self):
@@ -98,7 +99,8 @@ class Session:
             self.last_client=time.monotonic()
             return {"state":self.state,"message":self.message,"count":len(self.images),"target":24,
                     "coverage":len(self.coverage),"coverage_target":8,
-                    "instruction":STEPS[min(len(self.images)//2,len(STEPS)-1)],"result":self.result}
+                    "instruction":STEPS[min(len(self.images)//2,len(STEPS)-1)],"result":self.result,
+                    "alignment":self.alignment,"motion_phase":self.motion_phase,"motion_seconds":self.motion_seconds,"motion_duration":self.motion_duration}
     def start(self, config):
         square=float(config.get("square_mm",0))
         if not math.isfinite(square) or not 10<=square<=40:raise ValueError("Square size must be 10–40 mm")
@@ -115,7 +117,7 @@ class Session:
                 raise ValueError("Recording limit reached. Archive previous sessions before continuing.")
             self.path=self.output/(time.strftime("%Y%m%d-%H%M%S")+"-"+secrets.token_hex(3))
             self.path.mkdir(parents=True,exist_ok=False)
-            self.config=dict(config);self.images=[];self.coverage=set();self.result=None;self.last_attempt=0
+            self.config=dict(config);self.motion_phase=None;self.alignment=None;self.images=[];self.coverage=set();self.result=None;self.last_attempt=0
             self.stop_event=threading.Event();self.running=True;self.state="capturing";self.last_client=time.monotonic()
             (self.path/'screen.json').write_text(json.dumps(config,indent=2))
             self.worker=threading.Thread(target=self.capture,daemon=True);self.worker.start()
@@ -173,6 +175,7 @@ class Session:
                         result=solve(self.images,size,float(self.config['square_mm']))
                         if self.stop_event.is_set():break
                         result['camera_source']=self.camera
+                        result['device_id']=self.device_id
                         result['calibration_id']=hashlib.sha256(json.dumps(result,sort_keys=True).encode()).hexdigest()[:20]
                         (self.path/'camera-calibration.json').write_text(json.dumps(result,indent=2))
                         with self.lock:self.result=result;self.state="complete";self.message="Camera calibration saved. Camera/IMU alignment is next."
@@ -187,14 +190,35 @@ class Session:
             with self.lock:
                 self.running=False
                 if self.state not in ('complete','error'):self.state="stopped";self.message="Capture stopped; existing calibration unchanged"
+    def start_alignment(self,config,validate=False):
+        from calibration_motion import run_motion
+        with self.lock:
+            if self.running:raise ValueError("A recording is already running")
+            if not self.result or not self.result.get('intrinsics_validated'):
+                raise ValueError("Complete camera calibration first")
+            if validate and self.alignment is None:raise ValueError("Record an alignment candidate first")
+            if config.get('props_removed') is not True or config.get('screen_verified') is not True:
+                raise ValueError("Confirm screen scale and props removed")
+            if float(config.get('square_mm',0))!=float(self.result['square_mm']) or abs(float(config.get('pixels_per_mm',0))-float(self.config['pixels_per_mm']))>.001:
+                raise ValueError("Board size changed: restore the previous size or repeat camera calibration")
+            verify_disarmed()
+            if shutil.disk_usage(self.path).free<64*1024*1024:raise ValueError('At least 64 MB free is required for a motion recording')
+            self.motion_phase='validation' if validate else 'alignment'
+            self.motion_seconds=0;self.motion_duration=30 if validate else 60
+            self.motion_path=self.path/(self.motion_phase+'-'+secrets.token_hex(3))
+            self.motion_path.mkdir(exist_ok=False)
+            self.stop_event=threading.Event();self.last_client=time.monotonic();self.running=True
+            self.state='alignment_recording';self.message='Hold still with the entire board visible'
+            self.worker=threading.Thread(target=run_motion,args=(self,validate),daemon=True);self.worker.start()
+
     def stop(self):self.stop_event.set()
     def export(self):
         with self.lock:
             if self.path is None:raise ValueError("No recording yet")
             buf=io.BytesIO()
             with zipfile.ZipFile(buf,'w',zipfile.ZIP_DEFLATED) as z:
-                for p in self.path.iterdir():
-                    if p.is_file():z.write(p,p.name)
+                for p in self.path.rglob("*"):
+                    if p.is_file():z.write(p,str(p.relative_to(self.path)))
             return buf.getvalue()
 
 def verify_disarmed():
@@ -242,6 +266,8 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(config,dict):raise ValueError("Expected settings object")
             route=urlsplit(self.path).path
             if route=='/api/start':self.server.session.start(config)
+            elif route=='/api/align':self.server.session.start_alignment(config)
+            elif route=='/api/validate':self.server.session.start_alignment(config,validate=True)
             elif route=='/api/stop':self.server.session.stop()
             else:self.send(404,{'error':'Not found'});return
             self.send(200,{'ok':True})
