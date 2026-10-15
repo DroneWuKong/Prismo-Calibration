@@ -15,7 +15,7 @@
 <div class="field"><label for="density">Fine adjustment <output id="densityValue"></output></label><input id="density" type="range" min="0.8" max="24" step="0.005" aria-label="Physical screen scale"></div>
 <div class="reference"><div id="ruler" class="ruler"></div></div>
 <p class="muted">The line above should measure two inches. The selected preset gets it close; adjust only if needed. Keep this browser on the laptop screen.</p>
-<div class="field"><label for="square">Square size</label><select id="square"><option value="25">25 mm · standard</option><option value="20">20 mm · smaller board</option><option value="15">15 mm · compact board</option></select></div>
+<div class="field"><label for="square">Square size</label><select id="square"><option value="25">25 mm · standard</option><option value="20">20 mm · smaller board</option><option value="15" selected>15 mm · compact board</option></select></div>
 <label class="check"><input id="measured" type="checkbox">The reference line matches my ruler.</label>
 <label class="check"><input id="props" type="checkbox">Propellers are removed and the aircraft is disarmed.</label>
 <label class="check"><input id="voice" type="checkbox" checked>Speak the next movement so I can keep looking at the drone.</label>
@@ -37,9 +37,9 @@ const DISPLAY_PRESETS = {"px13": {"label": "ASUS ProArt PX13", "diagonal": 13.3,
 function presetScale(preset,ratio){const p=DISPLAY_PRESETS[preset];return Math.hypot(p.width,p.height)/(p.diagonal*25.4*ratio);}
 let ppm=presetScale('px13',devicePixelRatio), token='', active=false, lastCount=-1, lastInstruction='', dpr=devicePixelRatio;
 let saved=null;try{saved=JSON.parse(localStorage.getItem('prismoCalibrationDisplay')||'null');}catch(e){}
-if(saved&&Number.isFinite(saved.ppm)&&saved.dpr===devicePixelRatio&&saved.screenWidth===screen.width&&saved.screenHeight===screen.height){ppm=saved.ppm;$('preset').value=saved.preset in DISPLAY_PRESETS?saved.preset:'manual';}
+if(saved&&Number.isFinite(saved.ppm)&&saved.dpr===devicePixelRatio&&saved.screenWidth===screen.width&&saved.screenHeight===screen.height){ppm=saved.ppm;if([15,20,25].includes(saved.square))$('square').value=String(saved.square);$('preset').value=saved.preset in DISPLAY_PRESETS?saved.preset:'manual';}
 $('density').value=ppm;$('preview').onload=()=>{$('preview').classList.remove('hidden');$('previewPlaceholder').classList.add('hidden');};$('preview').onerror=()=>{$('preview').classList.add('hidden');$('previewPlaceholder').classList.remove('hidden');};
-function saveScale(){localStorage.setItem('prismoCalibrationDisplay',JSON.stringify({ppm,preset:$('preset').value,dpr:devicePixelRatio,screenWidth:screen.width,screenHeight:screen.height}));}
+function saveScale(){localStorage.setItem('prismoCalibrationDisplay',JSON.stringify({ppm,square:Number($('square').value),preset:$('preset').value,dpr:devicePixelRatio,screenWidth:screen.width,screenHeight:screen.height}));}
 function renderScale(){ppm=Number($('density').value);$('densityValue').textContent=`· ${ppm.toFixed(3)} px/mm`;$('ruler').style.width=(50.8*ppm)+'px';const p=DISPLAY_PRESETS[$('preset').value];$('displayInfo').textContent=p?`${p.label}: approximately ${(p.diagonal*25.4*p.width/Math.hypot(p.width,p.height)).toFixed(1)} × ${(p.diagonal*25.4*p.height/Math.hypot(p.width,p.height)).toFixed(1)} mm of active display.`:'Match the two-inch reference to a ruler.';draw();}
 function boardGeometry(){const s=Number($('square').value)*ppm;return {s,w:s*8.6,h:s*6.6};}
 function draw(){const {s,w,h}=boardGeometry(),canvas=$('board'),ratio=devicePixelRatio;canvas.style.width=w+'px';canvas.style.height=h+'px';canvas.width=Math.round(w*ratio);canvas.height=Math.round(h*ratio);const c=canvas.getContext('2d');c.fillStyle='#fff';c.fillRect(0,0,canvas.width,canvas.height);c.fillStyle='#000';for(let y=0;y<6;y++)for(let x=0;x<8;x++)if((x+y)%2===0){const x0=Math.round((x+.3)*s*ratio),x1=Math.round((x+1.3)*s*ratio),y0=Math.round((y+.3)*s*ratio),y1=Math.round((y+1.3)*s*ratio);c.fillRect(x0,y0,x1-x0,y1-y0);}}
