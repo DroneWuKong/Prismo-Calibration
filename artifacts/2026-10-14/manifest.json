@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "commit": "173c89a5bc0697cea636ec02d34b90c944a1d8ef",
+  "created_utc": "2026-10-15T04:16:48.624080+00:00",
+  "files": {
+    "wingman_vio_native.py": "5687d6e1695d51b1de26058d554f9108f90c4ae19b78439249369878605b9e63",
+    "calibration_app.html": "aac3d4294c2dca975c6b6b5c285d620c6b2c646065e458204947494e9f7b8599",
+    "wingman-calibration.service": "f2d3c52d032d7b88003e6f1b13b14c830028fd33598d651bb607531ebbaf47d7",
+    "calibration_motion.py": "2b4a55d435503dc546d470f24467194fda8f2a299c7785b0ad8f062ff1f52070",
+    "fusion_control.py": "80f492b520cbecba640db106f550e9656c7d1528ea8b51a769ddc8e7ec827a32",
+    "calibration_imu.py": "c1a22ac5011c186f13a21f0b7b69757f3eef285271197fbe38b51a4c90070034",
+    "calibration_app.py": "3a5b2d5ebc6c699779135cf472b06a12c98d9909b487d3302eeed37026f2b2ce",
+    "camera_imu_calibration.py": "aed34abe1e7611c9c6a084b319b0183728906e2a97541907ac1aae8f0b040d3d",
+    "wingman_vio.py": "f3359953beddac56fad3a844978bcb22d344868d264d261e1bef1c946ab272f8",
+    "detector/wingman-detector": "9b6958700ecec5843eb8cd382ee7be4bab2768c65f44c33e78c37d1ddd4f25c9"
+  },
+  "camera_timestamp_kind": "dequeue_monotonic",
+  "flight_qualified": false
+}

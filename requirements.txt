@@ -1,0 +1,3 @@
+# Match the original APB OpenCV 4.6 verification target.
+numpy==1.26.4
+opencv-python-headless==4.6.0.66
