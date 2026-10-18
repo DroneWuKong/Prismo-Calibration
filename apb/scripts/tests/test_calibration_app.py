@@ -82,7 +82,8 @@ def test_http_rejects_cross_origin_mutations(tmp_path):
     worker=threading.Thread(target=server.serve_forever,daemon=True);worker.start()
     base=f'http://127.0.0.1:{server.server_port}'
     try:
-        assert b'ASUS ProArt PX13' in urllib.request.urlopen(base).read()
+        assert b'Sensor Cal' in urllib.request.urlopen(base).read()
+        assert b'ASUS ProArt PX13' in urllib.request.urlopen(base+'/camera').read()
         token=json.load(urllib.request.urlopen(base+'/api/token'))['token']
         req=urllib.request.Request(base+'/api/stop',data=b'{}',headers={'Origin':'http://other.example','X-Calibration-Token':token})
         with pytest.raises(urllib.error.HTTPError) as e:urllib.request.urlopen(req)

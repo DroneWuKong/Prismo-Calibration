@@ -5,7 +5,7 @@ ConditionPathExists=/data/wingman/calibration_app.py
 [Service]
 Type=simple
 WorkingDirectory=/data/wingman
-ExecStart=/usr/bin/python3 /data/wingman/calibration_app.py --bind 0.0.0.0
+ExecStart=/usr/bin/python3 /data/wingman/calibration_app.py --bind 0.0.0.0 --output /data/wingman/calibration
 Environment=PYTHONPATH=/data/wingman/pylib
 Environment=PYTHONUNBUFFERED=1
 Restart=on-failure

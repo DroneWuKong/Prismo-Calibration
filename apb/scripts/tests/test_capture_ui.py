@@ -12,7 +12,7 @@ const vm=require('vm'), assert=require('assert');
 const elements={};
 function element(id){return elements[id]??=( {
  value:id==='square'?'15':id==='preset'?'px13':'', checked:true, textContent:'',
- style:{}, classList:{hidden:id==='target',add(){this.hidden=true},remove(){this.hidden=false},contains(){return this.hidden},toggle(){}},
+ style:{}, classList:{hidden:id==='target',add(){this.hidden=true},remove(){this.hidden=false},contains(){return this.hidden},toggle(name,force){this.hidden=force===undefined?!this.hidden:force;}},
  addEventListener(){}, getContext(){return {fillRect(){}}}, requestFullscreen:async()=>{throw Error('denied')}
 });}
 let status={state:'idle',count:0,message:'idle'};
@@ -47,6 +47,18 @@ vm.runInContext(SCRIPT,context);
  await oldPoll;
  assert.equal(vm.runInContext('active',context),true);
  assert.equal(element('target').classList.hidden,false);
+ // Returning through the sensor home restores completed lens/IMU progress.
+ pendingStatus=null;
+ vm.runInContext('active=false',context);
+ element('align').classList.hidden=true;
+ element('validate').classList.hidden=true;
+ status={state:'complete',count:24,message:'Lens saved',result:{distortion_model:'radtan',heldout_rms_px:.12}};
+ await vm.runInContext('poll()',context);
+ assert.equal(element('align').classList.hidden,false);
+ assert.match(element('result').textContent,/Camera calibrated/);
+ status={...status,state:'alignment_candidate',alignment:{independent_validation_passed:false}};
+ await vm.runInContext('poll()',context);
+ assert.equal(element('validate').classList.hidden,false);
 })().catch(e=>{console.error(e);process.exitCode=1});
 """
     subprocess.run(["node","-e",harness.replace("SCRIPT",repr(script))],check=True)

@@ -16,8 +16,12 @@ import time
 import uuid
 from pathlib import Path
 import numpy as np
-from fusion_control import FusionControl
-from wingman_vio import MjpegHttpReader
+if __package__:
+    from .fusion_control import FusionControl
+    from .wingman_vio import MjpegHttpReader
+else:
+    from fusion_control import FusionControl
+    from wingman_vio import MjpegHttpReader
 
 
 class ClockSync:

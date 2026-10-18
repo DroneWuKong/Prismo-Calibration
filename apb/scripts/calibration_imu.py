@@ -6,7 +6,10 @@ import socket
 import struct
 import threading
 import time
-from wingman_vio_native import ClockSync
+if __package__:
+    from .wingman_vio_native import ClockSync
+else:
+    from wingman_vio_native import ClockSync
 
 CRC={0:50,27:144,111:34,244:95}
 

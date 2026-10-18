@@ -4,9 +4,14 @@ import json
 import time
 import cv2
 import numpy as np
-from wingman_vio import MjpegHttpReader
-from calibration_imu import ImuRecorder
-from camera_imu_calibration import target_pose,solve_alignment,validate_alignment,export_openvins_chain
+if __package__:
+    from .wingman_vio import MjpegHttpReader
+    from .calibration_imu import ImuRecorder
+    from .camera_imu_calibration import target_pose,solve_alignment,validate_alignment,export_openvins_chain
+else:
+    from wingman_vio import MjpegHttpReader
+    from calibration_imu import ImuRecorder
+    from camera_imu_calibration import target_pose,solve_alignment,validate_alignment,export_openvins_chain
 
 
 def run_motion(owner,validate=False):
@@ -27,7 +32,10 @@ def run_motion(owner,validate=False):
             if imu.error:raise ValueError(imu.error)
             if elapsed>=duration:break
             if time.monotonic()-heartbeat>10:
-                from calibration_app import verify_disarmed
+                if __package__:
+                    from .calibration_app import verify_disarmed
+                else:
+                    from calibration_app import verify_disarmed
                 verify_disarmed();heartbeat=time.monotonic()
             ok,gray=reader.read()
             if not ok:raise ValueError('Camera stream interrupted; keep USB and aircraft power connected')
@@ -73,6 +81,7 @@ def run_motion(owner,validate=False):
         result=validate_alignment(owner.alignment,poses,recorded) if validate else solve_alignment(poses,recorded)
         if owner.stop_event.is_set():return
         result['camera_calibration_id']=owner.result['calibration_id']
+        result['setup']=owner.config.get('setup')
         result['imu_intrinsics_source']='FC corrected RAW_IMU; IMU scale/nonorthogonality not independently estimated'
         result['capture_timing_validated']=bool(validate)
         result['alignment_id']=hashlib.sha256(json.dumps(result,sort_keys=True).encode()).hexdigest()[:20]

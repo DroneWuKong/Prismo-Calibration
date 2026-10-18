@@ -33,7 +33,10 @@ Dependencies (Yocto Kirkstone apt / pip):
 """
 
 import argparse
-from fusion_control import FusionControl, native_vio_running
+if __package__:
+    from .fusion_control import FusionControl, native_vio_running
+else:
+    from fusion_control import FusionControl, native_vio_running
 import json
 import math
 import socket

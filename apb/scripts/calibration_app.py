@@ -15,7 +15,14 @@ from pathlib import Path
 from urllib.parse import urlsplit
 import cv2
 import numpy as np
-from wingman_vio import MjpegHttpReader
+if __package__:
+    from .wingman_vio import MjpegHttpReader
+    from .calibration_workspace import Workspace
+    from .orqa_setup import normalize_setup, capabilities
+else:
+    from wingman_vio import MjpegHttpReader
+    from calibration_workspace import Workspace
+    from orqa_setup import normalize_setup, capabilities
 
 BOARD = (7, 5)  # inner corners; displayed board is 8 by 6 squares
 STEPS = ["Point the camera at the whole board", "Move a little closer", "Move a little farther away",
@@ -94,6 +101,7 @@ class Session:
         self.device_id=hashlib.sha256(Path('/etc/machine-id').read_bytes()).hexdigest()[:16] if Path('/etc/machine-id').exists() else 'unknown-device'
         self.token=secrets.token_urlsafe(32);self.last_attempt=0
         self.worker=None;self.stop_event=threading.Event();self.last_client=time.monotonic()
+        self.workspace=Workspace(output)
     def status(self):
         with self.lock:
             self.last_client=time.monotonic()
@@ -102,6 +110,10 @@ class Session:
                     "instruction":STEPS[min(len(self.images)//2,len(STEPS)-1)],"result":self.result,
                     "alignment":self.alignment,"motion_phase":self.motion_phase,"motion_seconds":self.motion_seconds,"motion_duration":self.motion_duration}
     def start(self, config):
+        setup=normalize_setup(config.get('setup'),config.get('device_profile','prismo_apb'))
+        if not capabilities(setup)['guided_capture']:
+            raise ValueError('This Orqa setup uses recording imports. Select a Prismo APB setup for guided capture.')
+        config={**config,'setup':setup}
         square=float(config.get("square_mm",0))
         if not math.isfinite(square) or not 10<=square<=40:raise ValueError("Square size must be 10–40 mm")
         if config.get("props_removed") is not True or config.get("screen_verified") is not True:
@@ -176,6 +188,7 @@ class Session:
                         if self.stop_event.is_set():break
                         result['camera_source']=self.camera
                         result['device_id']=self.device_id
+                        result['setup']=self.config['setup']
                         result['calibration_id']=hashlib.sha256(json.dumps(result,sort_keys=True).encode()).hexdigest()[:20]
                         (self.path/'camera-calibration.json').write_text(json.dumps(result,indent=2))
                         with self.lock:self.result=result;self.state="complete";self.message="Camera calibration saved. Camera/IMU alignment is next."
@@ -191,11 +204,18 @@ class Session:
                 self.running=False
                 if self.state not in ('complete','error'):self.state="stopped";self.message="Capture stopped; existing calibration unchanged"
     def start_alignment(self,config,validate=False):
-        from calibration_motion import run_motion
+        if __package__:
+            from .calibration_motion import run_motion
+        else:
+            from calibration_motion import run_motion
         with self.lock:
             if self.running:raise ValueError("A recording is already running")
             if not self.result or not self.result.get('intrinsics_validated'):
                 raise ValueError("Complete camera calibration first")
+            if config.get('setup') is not None:
+                setup=normalize_setup(config['setup'],config.get('device_profile','prismo_apb'))
+                if setup!=self.config.get('setup'):
+                    raise ValueError('Equipment setup changed. Return to the calibrated setup or repeat lens calibration.')
             if validate and self.alignment is None:raise ValueError("Record an alignment candidate first")
             if config.get('props_removed') is not True or config.get('screen_verified') is not True:
                 raise ValueError("Confirm screen scale and props removed")
@@ -212,6 +232,27 @@ class Session:
             self.worker=threading.Thread(target=run_motion,args=(self,validate),daemon=True);self.worker.start()
 
     def stop(self):self.stop_event.set()
+    def check_setup(self,config):
+        from urllib.request import urlopen
+        setup=normalize_setup(config.get('setup'),config.get('device_profile','orqa_apb'))
+        available=capabilities(setup)
+        checks=[{'name':'Recording imports','status':'ready','message':'All four calibration workflows can use saved recordings.'}]
+        if available['guided_capture']:
+            try:
+                verify_disarmed()
+                checks.append({'name':'FC telemetry','status':'ready','message':'Fresh disarmed heartbeat received.'})
+            except ValueError as e:
+                checks.append({'name':'FC telemetry','status':'unavailable','message':str(e)})
+            try:
+                with urlopen(self.camera,timeout=2) as response:
+                    if 'multipart/' not in response.headers.get('Content-Type',''):
+                        raise ValueError('Expected the APB MJPEG camera service')
+                checks.append({'name':'APB camera service','status':'ready','message':'Camera service reachable; frame quality and timing are checked during capture.'})
+            except (OSError,ValueError) as e:
+                checks.append({'name':'APB camera service','status':'unavailable','message':str(e)})
+        return {'setup':setup,'capabilities':available,'checks':checks,
+                'guided_ready':available['guided_capture'] and all(c['status']=='ready' for c in checks),
+                'firmware_identity':'Operator-selected; not detected from the controller'}
     def export(self):
         with self.lock:
             if self.path is None:raise ValueError("No recording yet")
@@ -245,7 +286,21 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('X-Content-Type-Options','nosniff');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
     def do_GET(self):
         route=urlsplit(self.path).path
-        if route=='/':self.send(200,self.server.ui.read_bytes(),'text/html; charset=utf-8')
+        if route=='/':self.send(200,Path(__file__).with_name('calibration_home.html').read_bytes(),'text/html; charset=utf-8')
+        elif route=='/camera':self.send(200,self.server.ui.read_bytes(),'text/html; charset=utf-8')
+        elif route=='/assets/calibration_home.js':self.send(200,Path(__file__).with_name('calibration_home.js').read_bytes(),'text/javascript; charset=utf-8')
+        elif route=='/api/workspace/catalog':self.send(200,self.server.session.workspace.catalog())
+        elif route=='/api/workspace/history':self.send(200,{'sessions':self.server.session.workspace.history()})
+        elif route.startswith('/api/workspace/export/'):
+            try:self.send(200,self.server.session.workspace.export(route.rsplit('/',1)[-1]),'application/zip')
+            except ValueError as e:self.send(404,{'error':str(e)})
+        elif route.startswith('/api/workspace/example/'):
+            if __package__:
+                from .calibration_examples import example
+            else:
+                from calibration_examples import example
+            try:self.send(200,example(route.rsplit('/',1)[-1]))
+            except ValueError as e:self.send(404,{'error':str(e)})
         elif route=='/api/status':self.send(200,self.server.session.status())
         elif route=='/api/token':self.send(200,{'token':self.server.session.token})
         elif route=='/api/preview':
@@ -260,12 +315,18 @@ class Handler(BaseHTTPRequestHandler):
         if urlsplit(origin).netloc!=self.headers.get('Host') or self.headers.get('X-Calibration-Token')!=self.server.session.token:
             self.send(403,{'error':'Open this tool directly in your browser'});return
         try:
+            route=urlsplit(self.path).path
             length=int(self.headers.get('Content-Length','0'))
-            if not 0<length<=8192:raise ValueError("Invalid request size")
+            limit=8*1024*1024 if route=='/api/workspace/calibrate' else 8192
+            if not 0<length<=limit:raise ValueError("Invalid request size")
             config=json.loads(self.rfile.read(length))
             if not isinstance(config,dict):raise ValueError("Expected settings object")
-            route=urlsplit(self.path).path
-            if route=='/api/start':self.server.session.start(config)
+            if route=='/api/workspace/calibrate':
+                result=self.server.session.workspace.calibrate(config.get('recording'),config.get('device_profile'),config.get('setup'))
+                self.send(200,{'ok':True,'result':result});return
+            elif route=='/api/workspace/check':
+                self.send(200,self.server.session.check_setup(config));return
+            elif route=='/api/start':self.server.session.start(config)
             elif route=='/api/align':self.server.session.start_alignment(config)
             elif route=='/api/validate':self.server.session.start_alignment(config,validate=True)
             elif route=='/api/stop':self.server.session.stop()
@@ -276,9 +337,20 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--bind',default='127.0.0.1');parser.add_argument('--port',type=int,default=8091)
-    parser.add_argument('--output',default='/data/wingman/calibration');parser.add_argument('--camera',default='http://127.0.0.1:8082/')
+    parser.add_argument('--output',default='./sessions');parser.add_argument('--camera',default='http://127.0.0.1:8082/')
+    parser.add_argument('--open',action='store_true',help='Open the calibration app in your browser')
     parser.add_argument('--ui',default=str(Path(__file__).with_name('calibration_app.html')));args=parser.parse_args()
     cv2.setNumThreads(1)
     server=ThreadingHTTPServer((args.bind,args.port),Handler);server.session=Session(args.output,args.camera);server.ui=Path(args.ui)
-    print(f'Calibration app listening on {args.bind}:{args.port}',flush=True);server.serve_forever()
+    url=f'http://{args.bind}:{server.server_port}/'
+    print(f'Orqa sensor calibration: {url}',flush=True)
+    if args.open:
+        import webbrowser
+        webbrowser.open(url)
+    try:server.serve_forever()
+    except KeyboardInterrupt:pass
+    finally:
+        server.session.stop()
+        if server.session.worker:server.session.worker.join(timeout=5)
+        server.server_close()
 if __name__=='__main__':main()
