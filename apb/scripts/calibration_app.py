@@ -288,6 +288,10 @@ class Handler(BaseHTTPRequestHandler):
         route=urlsplit(self.path).path
         if route=='/':self.send(200,Path(__file__).with_name('calibration_home.html').read_bytes(),'text/html; charset=utf-8')
         elif route=='/camera':self.send(200,self.server.ui.read_bytes(),'text/html; charset=utf-8')
+        elif route in ('/alignment','/alignment.js','/alignment_model.js','/alignment.css'):
+            name='alignment.html' if route=='/alignment' else route[1:]
+            kind='text/html; charset=utf-8' if route=='/alignment' else 'text/css; charset=utf-8' if route.endswith('.css') else 'text/javascript; charset=utf-8'
+            self.send(200,Path(__file__).with_name(name).read_bytes(),kind)
         elif route=='/assets/calibration_home.js':self.send(200,Path(__file__).with_name('calibration_home.js').read_bytes(),'text/javascript; charset=utf-8')
         elif route=='/api/workspace/catalog':self.send(200,self.server.session.workspace.catalog())
         elif route=='/api/workspace/history':self.send(200,{'sessions':self.server.session.workspace.history()})

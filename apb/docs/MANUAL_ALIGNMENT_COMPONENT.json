@@ -1,0 +1,20 @@
+{
+  "component": "portable-manual-alignment-workbench",
+  "component_version": "1.0.0",
+  "source_repository": "https://github.com/DroneWuKong/Sensor-Calibration-Lab",
+  "source_directory": "src/sensor_calibration_lab/web",
+  "source_state": "local development snapshot; not published",
+  "files_sha256": {
+    "alignment.html": "482e68d6f4480bb8a1d4f59b528927e2e332fd4483461ee992d5d9c9e865b2e4",
+    "alignment.css": "17ba18827c02a0afe064f2b15107affeb9c0caa597f29ae11731503ace003f1c",
+    "alignment_model.js": "10f60536be7b20afc799f159faa2d80b5ad401cde199a54eaf8ad25d4b302a4e",
+    "alignment.js": "edf0b247c844f8f297190981126e9177a0aa2f6da7cbd61c759d2118c5e529f9"
+  },
+  "scope": "Browser-local visual observations and manual lever-arm positions, separate from numerical calibration; identical asset copies in both applications",
+  "license": "Existing proprietary LICENSE unchanged",
+  "claims": {
+    "physical_verified": false,
+    "numerically_validated": false,
+    "settings_applied": false
+  }
+}

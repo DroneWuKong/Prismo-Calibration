@@ -26,6 +26,10 @@ implemented. Old profile IDs remain accepted for compatibility. See the
 Other sensors, including standalone IMU intrinsics, compass, barometer and
 rangefinder calibration, need additional workflows and are not claimed as supported.
 
+## Manual alignment and lever arms
+
+Open **Manual camera alignment & lever-arm bench** from the home screen, or visit `/alignment`. Compare 2–8 browser-visible cameras or local images using crosshairs, display zoom and overlay/wipe. Record signed camera/IMU/flow/GNSS positions relative to a declared measurement frame, with units, sensing-point definitions, method and estimated bounds. Download/reopen a manual worksheet. Visual matching and manual positions remain separate from numerical calibration and settings application. See the [workbench guide](apb/docs/MANUAL_ALIGNMENT.md).
+
 ## Install and launch
 
 Use Python 3.10–3.12 (verified with 3.12):

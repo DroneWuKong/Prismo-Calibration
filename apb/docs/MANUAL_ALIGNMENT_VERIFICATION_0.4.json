@@ -1,0 +1,40 @@
+{
+  "milestone": "0.4.0",
+  "host": "GupB",
+  "platform": "Linux-7.0.0-28-generic-x86_64-with-glibc2.39",
+  "python": "3.12.3",
+  "data_scope": "Synthetic images, fixtures and canvas MediaStreams; no physical hardware verification",
+  "tests_passed": 89,
+  "manual_browser_status": "passed",
+  "numerical_browser_regression": "Prior Orqa browser checkpoint retained; current numerical pytest regression passed",
+  "installed_http_assets": "passed",
+  "wheel": {
+    "wheel": "prismo_calibration-0.4.0-py3-none-any.whl",
+    "sha256": "a834748e6a61dd4e3371806a4a63e76f123a7070d943a950893ac13e13e34cd6",
+    "packaged_files_equal_source": 23,
+    "manual_assets": true,
+    "physical_verified": false
+  },
+  "artifact_directory": "dist/verification-0.4",
+  "artifact_sha256": {
+    "installed-http-check.json": "873d7127fa875240d09b1257b3b92a4ae74377f1574fa86b0cac3d1886d228b7",
+    "manual/manual-browser-result.json": "7ca2bb198227a9ae60de5679d446eb5a2ba385a15bc93e3b7e6fc7d0fae01a2b",
+    "manual/manual-desktop.png": "28a7c7de894f91fe53ec5500304999adac6258720cb67e94dfc2dbb508ab4c1e",
+    "manual/manual-focus-desktop.png": "fbe2fc869486c715588c2320c3f7514923b0bdd3d9d99244a3425c1151bfd5ca",
+    "manual/manual-tablet.png": "8ad64618dbdd46859f3d2be5e5be0ad22bd5c2513b32bfa7f391063cc9fdaff7",
+    "manual/manual-worksheet.json": "aaf3323d7bbd4731931dddca559a5bd068eab85ea4407bd3062e000a6a5b2924",
+    "manual-browser.txt": "f18e682cb4a5f10cf031773eca0b7d2ff1f42aa68c6c159c9fe16e19acefcd55",
+    "package-install.txt": "645b549b7bc73054b9327407208ea11fc71857ee3a356e305195cc2fa49f8296",
+    "preview.log": "c26eafff5467bc9cdc890588af622572fc34f5cee2c2b20f177b1a7c28f1d894",
+    "pytest.txt": "9cbe1d79415657892a46920e58a5e0f77ec384cc8a888ae72058407123e6cfcf",
+    "wheel-build.txt": "98e6a5688503492a1d04dbcbc29c4f70f169389fcf69a51b4163e6ec9db8b31d",
+    "wheel-source-check.json": "213bddda835417ce36a1ff95de7086704c7020dd3e1ce21f2454984557289f04"
+  },
+  "claims": {
+    "physical_verified": false,
+    "numerically_validated_manual_observations": false,
+    "hardware_timing_verified": false,
+    "settings_applied": false,
+    "flight_qualified": false
+  }
+}
